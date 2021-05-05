@@ -1,4 +1,4 @@
-// Elliott 900 Operator - Andrew herbert 30/04/2021
+// Elliott 900 Operator - Andrew herbert 05/05/2021
 
 // Provides an operator control facility for use of an Elliott 920M computer.
 
@@ -24,9 +24,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/types.h>
 #include <popt.h>
 #include <signal.h>
-#include <termios.h>
 #include <errno.h>
 
 
@@ -60,11 +60,14 @@
 /*******************************************/
 
 
+int  usb           = 0;
 
 FILE *reader_file  = NULL;
 FILE *punch_file   = NULL;
-char *reader_name  =  NULL;
+char *reader_name  = NULL;
 char *punch_name   = NULL;
+
+char buf[1];
 
 extern int errno;
 
@@ -74,9 +77,10 @@ extern int errno;
 /*******************************************/
 
 int  main(char **argv, int argc));
-int  get_cmd_ch(void);
-void put_cmd_ch(int);
+int  get_usb_ch(void);              // read from USB
+void put_usb_ch(int ch);            // write to usb
 void decode_args(char **argv, int argc);
+void catchInt(INT32 sig, void (*handler)(int));
 
 
 /*******************************************/
@@ -84,16 +88,11 @@ void decode_args(char **argv, int argc);
 /*******************************************/
 
 
-
 int main ()
 {
-  FILE *cmds = NULL; // for connection to PTS
-
-  signal(SIGINT, catchInt); // allow control-C to end cleanly
+    signal(SIGINT, catchInt); // allow control-C to end cleanly
  
   puts("920M Console Starting\n");
-  
-  reset_pts();
 
   /* open connection to paper tape station */
   if ( !(cmds = open("/dev/XXX", O_RW)) )
@@ -103,37 +102,28 @@ int main ()
       /* NOT REACHED */
     }
   
-    
   /* Loop reading request from paper tape station */
   while ( TRUE )
     {
       int ch;
-      ch1 = get_cmd_ch();
+      ch1 = get_usb_ch();
       switch ( ch )
         {
            case 'R': // read from input file
-	     get_cmd_ch(); // absorb newline
-	     put_cmd_ch(cmds, get_reader_ch());
-	     put_cmd_ch('\n'); // acknowledge
+	     put_usb_ch(get_reader_ch());
 	     break;
 
 	   case'W': // write to output file
-	     put_punch_ch(get_cmd_ch()); // character to output
-	     get_cmd_ch(); // absorb newline
-	     put_cmd_ch('\n'); // acknowledge
+	     put_punch_ch(get_usb_ch()); // character to output
 	     break;
 
-	   case 'S': // read from teletype
-	     get_cmd_ch(); // absorb newline
-	     putc(cmds, get_tty_ch());
-	     put_cmd_ch('\n'); // acknowledge
+	     /*	   case 'S': // read from teletype
+	     put_usb_ch(get_tty_ch());
 	     break;
 
 	   case'T': // write to output file
-	     put_tty_ch(get_cmd_ch()); // character to output
-	     get_cmd_ch(); // absorb newline
-	     put_cmd_ch('\n'); // acknowledge
-	     break:
+	     put_tty_ch(get_usb_ch()); // character to output
+	     break: */
 
            default:
 	     fprintf(stderr, "Protocol failure - received %d (%c)\n");
@@ -149,23 +139,23 @@ int main ()
 /*******************************************/
 
 
-int get_cmd_ch ()
+int get_usb_ch ()
 {
-  int ch;
-  if ( (ch = getc(cmds)) == EOF )
+  if ( read(usb, buf, 1) == EOF )
     {
-      puts(PTS_CONNECTION_LOST);
+      perror(PTS_CONNECTION_LOST);
       tidy_exit(EXIT_FAILURE_LOST_PTS);
       /* NOT REACHED */
     }
-  return ch;
+  return buf[0];
 }
 
-  void put_cmd_ch (const int ch)
+  void put_usb_ch (const int ch)
   {
-    if ( putc(ch, cmds) == EOF )
+    buf[0] = ch;
+    if ( write(cmd, buf, 1) == EOF )
     {
-      puts(PTS_CONNECTION_LOST);
+      perror(PTS_CONNECTION_LOST);
       tidy_exit(EXIT_FAILURE_LOST_PTS);
       /* NOT REACHED */
     }
@@ -181,7 +171,7 @@ int get_cmd_ch ()
   {
     if ( reader_file == NULL )
       {
-	if ( (reader_file = fopen(reader_name, "rb")) != 0 )
+	if ( (reader_file = fopen(reader_name, "r")) != 0 )
 	  {
 	    fprintf(stderr, READER_OPEN_FAIL, reader_name);
 	    perror();	    
@@ -196,7 +186,7 @@ int get_cmd_ch ()
   {
     if ( punch_file == NULL )
       {
-	if ( (punch_file = fopen(punch_name, "ab")) != 0 )
+	if ( (punch_file = fopen(punch_name, "w")) != 0 )
 	  {
 	    fprintf(stderr, PUNCH_OPEN_FAIL, punch_name);
 	    perror();
@@ -208,23 +198,8 @@ int get_cmd_ch ()
 
 
 /*******************************************/
-/*               RESET PTS                 */
-/*******************************************/
-	
-void reset_pts()
-{
-  gpio_put(NOPOWER_PIN, 1);
-  sleep(1.0);
-  gpio_put(NOPOWER_PIN, 0);
-}
-
-
-
-
-/*******************************************/
 /*            ARGUMENT DECODING            */
 /*******************************************/
-
 
 
 void decode_args(const char *argv, int arg)
@@ -272,10 +247,9 @@ void usage (poptContext optCon, INT32int exitcode, char *error, char *addl)
 
   void tidy_exit(int reason)
   {
-    close input;
-    close output;
-    close tty;
-    close cmds; // can PTS detect this and restart?
+    if ( input  != NULL ) fclose(input);
+    if ( output != NULL ) fclose(output);
+    if ( usb)             close(usb);
     exit(reason);
     /* NOT REACHED */
   }
